@@ -1,6 +1,6 @@
 # Truy vấn ảnh và chẩn đoán GraphRAG
 
-**Trạng thái:** Chưa phải minh chứng đã chạy benchmark. Graph lưu bền vững hiện có 0 node do thiếu cấu hình API; chưa thể chụp ba ảnh hợp lệ hoặc kết luận hai lỗi E1–E6. Các truy vấn này dùng ontology HINT đang được triển khai trong `src/graph.py`.
+**Trạng thái ngày 2026-10-05:** Full `--judge` đã chạy thành công: 202 node / 382 cạnh, 176 chunks, đủ 12 đáp án với judge thật. Ba ảnh trong `report/img/` chụp Neo4j Browser trên graph đầy đủ. E3 (Case Cái Quang Huy trùng do footer) và E6 (charge ghép của Lê Văn Đông) đã có Cypher, kết quả, nguồn và đề xuất trong `REPORT_KG.md`. Các truy vấn khác dưới đây là công cụ chẩn đoán, không tự động là lỗi đã quan sát.
 
 ## 1. Điều kiện trước khi chụp
 
@@ -11,7 +11,7 @@
 5. Chỉ dùng instance Neo4j dành riêng cho lab: runner reset toàn bộ node, relationship và constraint. Không chạy trên database dùng chung hoặc có dữ liệu cần giữ.
 6. Chạy test/check rồi chạy full `python bench_kg.py --judge`. `--check` và `--build --limit 2` để lại graph nhỏ, không dùng graph đó làm ảnh full benchmark.
 
-Chỉ tiếp tục khi file `ket_qua_benchmark_kg.txt` được sinh từ code cuối, có Indexing/Querying/Per question và đủ 12 câu trả lời với điểm judge thật.
+Lần đo đã dùng `gpt-4o-mini` / `text-embedding-3-small` qua YesScale với top-k 3, chunk-size 800. File kết quả đã đáp ứng ba phần/12 đáp án; không chạy lại `--check` sau full benchmark vì sẽ reset thành graph nhỏ. Nếu sửa code/build thì cần sinh lại kết quả và ảnh, không giữ snapshot cũ làm minh chứng mới.
 
 ## 2. Ba ảnh Neo4j Browser
 
@@ -46,7 +46,7 @@ RETURN DISTINCT person.name AS name, person.aliases AS aliases, article.id AS ar
 ORDER BY name;
 ```
 
-Chọn người thực sự có node và đọc lại bài gốc. Không chọn một biến thể tên của Lê Minh Thành để lách yêu cầu. Ghi tên người đã chọn vào `report/REPORT_KG.md`; hiện chưa có lựa chọn được xác minh.
+Người đã chọn và xác minh: **Cái Quang Huy**, nguồn chính `news-100260917203001265`. Đây không phải biến thể tên của Lê Minh Thành. Ảnh Q-D có đường tới Điều 250 BLHS, MDMA, Ketamine và Hà Nội, Results overview 7 node / 6 cạnh. Query ảnh dùng tên literal này thay parameter để nhìn rõ người được chọn trong ô truy vấn; production code vẫn dùng Cypher parameters.
 
 ### Q-D → `report/img/kg_my_case.png`
 
@@ -142,6 +142,20 @@ ORDER BY doc_id, person;
 ```
 
 Mở nguồn để phân biệt thiếu hợp lý với lỗi extraction. Cán bộ/người liên quan không nhất thiết có charge; người bị bắt hoặc đang truy tố không nhất thiết có sentence. Không tự điền khung án luật vào sentence để làm hết ô rỗng.
+
+Trường hợp thực tế đã xác nhận: đặt `person_name = 'Lê Văn Đông'`, đối chiếu `news-100260930085028036` và xem chuỗi đa tội chưa link:
+
+```cypher
+MATCH (person:Person {name: $person_name})-[participation:INVOLVED_IN]->
+      (case_node:Case {doc_id: 'news-100260930085028036'})
+MATCH (case_node)-[:CHARGED_WITH]->(crime:Crime)<-[:DEFINES]-(article:Article)
+RETURN participation.charge AS personal_charge,
+       participation.unlinked_charge AS unlinked_charge,
+       crime.name AS case_charge, article.id AS article
+ORDER BY article;
+```
+
+Hai dòng đều có personal_charge rỗng, unlinked_charge là `tổ chức sử dụng trái phép chất ma túy, tàng trữ trái phép chất ma túy`; Case vẫn nối tới Điều 249 và Điều 255. Query context cá nhân không trả hai điều này do lọc charge equality. Đây là E6 trong báo cáo, không phải lỗi vì người đang bị xét xử chưa có sentence.
 
 ## 4. Mẫu ghi nhận mỗi lỗi
 

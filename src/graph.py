@@ -113,13 +113,14 @@ Chỉ dùng thông tin có trong bài. Trả về JSON đúng dạng:
   "summary": "1-2 câu tóm tắt",
   "date": "ngày xảy ra/xét xử nếu có, dạng YYYY-MM-DD hoặc chuỗi rỗng",
   "location": "tỉnh/thành phố, chuỗi rỗng nếu không rõ",
-  "charges": ["tội danh, BẮT BUỘC chọn đúng nguyên văn từ DANH SÁCH TỘI DANH"],
+  "charges": ["tội danh trong bài, dùng nguyên văn từ DANH SÁCH TỘI DANH nếu khớp"],
   "substances": [{{"name": "tên chất, dùng tên chuẩn trong DANH SÁCH CHẤT nếu khớp", "amount": "khối lượng nếu có"}}],
   "people": [{{"name": "họ tên", "aliases": ["biệt danh"], "role": "bị cáo|bị can|nghi phạm|người liên quan|cán bộ",
-               "charge": "tội danh của người này (từ DANH SÁCH TỘI DANH) hoặc chuỗi rỗng",
+               "charge": "tội danh của người này trong bài, dùng tên chuẩn nếu khớp, hoặc chuỗi rỗng",
                "sentence": "mức án nếu có, ví dụ: tử hình, 8 năm tù"}}]
 }}]}}
 Bài không nói về vụ việc cụ thể (tuyên truyền, hội nghị...) thì trả về {{"cases": []}}.
+Tội chưa có trong danh sách thì giữ tên trong bài, không đổi thành một tội khác để ép khớp.
 Không gộp đoạn giới thiệu tin liên quan ở cuối bài vào vụ chính.
 Giữ lượng chịu trách nhiệm của từng người trong summary nếu nguồn phân biệt.
 Chỉ ghi sentence khi nguồn nêu mức án đã tuyên; không suy từ khung luật.
@@ -168,11 +169,16 @@ def extract_news_cases(doc: Document, llm_fn: Callable[[str], str], known_crimes
         case = {field: text_value(raw_case.get(field), field)
                 for field in ("name", "summary", "date", "location")}
         charges = []
+        unlinked_charges = []
         for raw_charge in list_value(raw_case, "charges"):
-            charge = link_entity(text_value(raw_charge, "charges"), known_crimes)
+            charge_text = text_value(raw_charge, "charges")
+            charge = link_entity(charge_text, known_crimes)
             if charge:
                 charges.append(charge)
+            elif charge_text:
+                unlinked_charges.append(charge_text)
         case["charges"] = sorted(set(charges))
+        case["unlinked_charges"] = list(dict.fromkeys(unlinked_charges))
 
         people = []
         for raw_person in list_value(raw_case, "people"):
@@ -180,7 +186,9 @@ def extract_news_cases(doc: Document, llm_fn: Callable[[str], str], known_crimes
                 raise ValueError(f"{doc.id}: mỗi person phải là object")
             person = {field: text_value(raw_person.get(field), field)
                       for field in ("name", "role", "sentence", "charge")}
-            person["charge"] = link_entity(person["charge"], known_crimes) or ""
+            charge_text = person["charge"]
+            person["charge"] = link_entity(charge_text, known_crimes) or ""
+            person["unlinked_charge"] = charge_text if not person["charge"] else ""
             aliases = [text_value(alias, "aliases") for alias in list_value(raw_person, "aliases")]
             person["aliases"] = list(dict.fromkeys(alias for alias in aliases if alias))
             if person["name"]:
@@ -296,6 +304,7 @@ class Neo4jGraph:
             """
             MERGE (k:Case {name: $name})
               SET k.summary = $summary, k.date = $date, k.doc_id = $doc_id, k.source_title = $title
+              SET k.unlinked_charges = $unlinked_charges
             FOREACH (loc IN CASE WHEN $location = '' THEN [] ELSE [$location] END |
                 MERGE (l:Location {name: loc}) MERGE (k)-[:LOCATED_IN]->(l))
             FOREACH (crime IN $charges | MERGE (c:Crime {name: crime}) MERGE (k)-[:CHARGED_WITH]->(c))
@@ -307,11 +316,13 @@ class Neo4jGraph:
                     CASE WHEN alias IN aliases THEN aliases ELSE aliases + [alias] END)
                 MERGE (person)-[participation:INVOLVED_IN]->(k)
                   SET participation.role = person_data.role, participation.charge = person_data.charge,
-                      participation.sentence = person_data.sentence)
+                      participation.sentence = person_data.sentence,
+                      participation.unlinked_charge = coalesce(person_data.unlinked_charge, ''))
             """,
             name=case.get("name") or doc.metadata.get("title", doc.id),
             summary=case.get("summary", ""), date=case.get("date", ""), location=case.get("location", ""),
             charges=case.get("charges", []), people=[p for p in case.get("people", []) if p.get("name")],
+            unlinked_charges=case.get("unlinked_charges", []),
             substances=[s for s in case.get("substances", []) if s.get("name")],
             doc_id=doc.id, title=doc.metadata.get("title", ""),
         )
@@ -352,13 +363,15 @@ class Neo4jGraph:
             OPTIONAL MATCH (person:Person)-[participation:INVOLVED_IN]->(case_node)
             WITH case_node, collect({name: person.name, aliases: person.aliases,
                 role: participation.role, sentence: participation.sentence, charge: participation.charge,
+                unlinked_charge: participation.unlinked_charge,
                 focused: elementId(person) IN $ids}) AS people,
                 max(CASE WHEN elementId(person) IN $ids THEN 1 ELSE 0 END) AS focus
             OPTIONAL MATCH (case_node)-[involvement:INVOLVES]->(case_substance:Substance)
             WITH case_node, people, focus,
                 collect({name: case_substance.name, amount: involvement.amount}) AS substances
             RETURN elementId(case_node) AS id, case_node.name AS name, case_node.summary AS summary,
-                case_node.doc_id AS doc_id, case_node.source_title AS source_title, people, substances
+                case_node.doc_id AS doc_id, case_node.source_title AS source_title,
+                coalesce(case_node.unlinked_charges, []) AS unlinked_charges, people, substances
             ORDER BY focus DESC, doc_id, name
             """,
             ids=seed_ids, aggregate=aggregate, substances=substances,
@@ -428,6 +441,9 @@ class Neo4jGraph:
             title = case.get("source_title") or case["name"]
             if case.get("summary"):
                 facts.append(f"[{source}] Vụ việc '{title}': {case['summary']}")
+            if case.get("unlinked_charges"):
+                facts.append(f"[{source}] Vụ '{title}': tội trích xuất chưa nối được với KB luật: "
+                             + "; ".join(case["unlinked_charges"]))
             for substance in sorted((substance for substance in case.get("substances", []) if substance.get("name")),
                                     key=lambda substance: substance["name"]):
                 amount = f"; lượng theo nguồn: {substance['amount']}" if substance.get("amount") else ""
@@ -437,6 +453,8 @@ class Neo4jGraph:
             for person in people:
                 details = [f"{field}: {person[field]}" for field in ("role", "charge", "sentence")
                            if person.get(field)]
+                if person.get("unlinked_charge"):
+                    details.append("tội trích xuất chưa nối được với KB luật: " + person["unlinked_charge"])
                 if person.get("aliases"):
                     details.append("biệt danh: " + ", ".join(person["aliases"]))
                 people_facts.append(f"[{source}] {person['name']} trong vụ '{title}': " + "; ".join(details))

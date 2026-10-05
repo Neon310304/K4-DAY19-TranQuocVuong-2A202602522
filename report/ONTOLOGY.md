@@ -6,7 +6,7 @@
 - [x] Dùng ontology gợi ý (có thể chỉnh nhỏ)
 - [ ] Tự thiết kế (xét bonus +15, xem `SUBMISSION.md`)
 
-**Trạng thái:** KG-1 đến KG-4 đã được triển khai theo bảy label HINT, bổ sung chuẩn hóa khóa và giữ provenance. 48 test gốc và 35 test bổ sung đều pass. Đã kiểm chứng multi-hop trên Neo4j qua driver bằng fixture tổng hợp rồi rollback; không lưu fixture làm dữ liệu bài nộp. Chưa nạp tin tức bằng LLM thật vì `.env` chưa có API key; chưa có kết quả build đầy đủ/benchmark hoặc đủ 7 `[OK]` của runner. Không nhận bonus cho những chỉnh sửa nhỏ này.
+**Trạng thái:** KG-1 đến KG-4 đã triển khai theo bảy label HINT, bổ sung chuẩn hóa khóa, provenance và diagnostic cho tội chưa link. 48 test gốc và 38 test bổ sung pass; live `--check` đạt 7 `[OK]`. Full `--judge` trên 18 luật/20 tin thật tạo 202 node / 382 cạnh và `ket_qua_benchmark_kg.txt`; ba ảnh Browser ở `report/img/`. Báo cáo phân tích hai lỗi thực tế E3/E6 trong `REPORT_KG.md`. Không nhận bonus cho những chỉnh sửa nhỏ này.
 
 ### Dữ liệu đã đọc và những thành phần chung
 
@@ -43,9 +43,9 @@ flowchart LR
     end
     subgraph news_kb["KB tin tức — LLM"]
         person["Person<br/>name, aliases"]
-        case_node["Case<br/>name, summary, date, doc_id"]
+        case_node["Case<br/>name, summary, date, doc_id, unlinked_charges"]
         location["Location<br/>name"]
-        person -->|"INVOLVED_IN: role, sentence, charge"| case_node
+        person -->|"INVOLVED_IN: role, sentence, charge, unlinked_charge"| case_node
         case_node -->|LOCATED_IN| location
     end
     crime["Crime<br/>CẦU NỐI CHÍNH<br/>canonical name"]
@@ -67,7 +67,7 @@ flowchart LR
 | `Article` | Một điều trong một luật | `id` từ metadata, ví dụ `Điều 251 BLHS`; không chỉ dùng số 251 | `id`, `title`, `law`, `doc_id` | Luật | Metadata + `parse_law_article()` |
 | `Clause` | Một khoản hoặc mục định nghĩa trong điều | `id = Article.id + " khoản " + number` | `id`, `number`, `penalty`, `text`, `doc_id` | Luật | Regex đầu dòng `number.`; giữ toàn văn các điểm bên trong khoản |
 | `Crime` | Tội danh chuẩn | `name` sau `normalize_crime()`, từ tiêu đề BLHS | `name` | **Cả hai**, canonical lấy từ luật | Regex tiêu đề luật; LLM phía tin rồi `link_entity()` |
-| `Case` | Mô tả một vụ việc trong một nguồn tin | `name` có scope nguồn: `doc_id + " :: " + case_caption` đã chuẩn hóa khoảng trắng | `name`, `summary`, `date`, `doc_id`, `source_title` | Tin tức | LLM; build chuẩn bị khóa trước khi gọi helper ghi |
+| `Case` | Mô tả một vụ việc trong một nguồn tin | `name` có scope nguồn: `doc_id + " :: " + case_caption` đã chuẩn hóa khoảng trắng | `name`, `summary`, `date`, `doc_id`, `source_title`, `unlinked_charges` (list tên tội chưa link) | Tin tức | LLM; build chuẩn bị khóa trước khi gọi helper ghi |
 | `Person` | Người cụ thể liên quan vụ việc | `name` là họ tên đầy đủ đã chuẩn hóa Unicode/khoảng trắng; không dùng riêng biệt danh | `name`, `aliases` | Tin tức | LLM; đối chiếu tên đầy đủ/biệt danh trong cùng ngữ cảnh |
 | `Substance` | Chất/nhóm chất dùng trong luật và vụ việc | `name` chuẩn, ưu tiên danh sách `SUBSTANCES` khi nhận diện được | `name` | **Cả hai** | `find_substances()` phía luật; LLM phía tin + canonical mapping |
 | `Location` | Địa bàn được nguồn tin nêu | `name` chuẩn hóa khoảng trắng và tên địa bàn khi đủ căn cứ | `name` | Tin tức | LLM; không tự suy đoán địa điểm không có trong nguồn |
@@ -87,7 +87,9 @@ flowchart LR
 
 Luật dùng `parse_law_article()` và `add_law_article()`; khoản được tách bằng regex, các điểm `a)`, `b)` vẫn nằm trong `Clause.text`. PCMT có khoản định nghĩa, không có khung phạt thì `penalty` để rỗng, không tự tạo hình phạt.
 
-Tin dùng `extract_news_cases()` và `add_news_case()` sau bước kiểm tra dữ liệu, chuẩn hóa khóa và re-link tội danh. LLM được cung cấp danh sách crime từ luật và danh sách chất chuẩn; phải giữ thông tin không chắc chắn trong summary/role. Bài tuyên truyền không chứa vụ cụ thể trả danh sách cases rỗng. Các đoạn dẫn sang tin liên quan không được gán thành người/chất của vụ chính.
+Tin dùng `extract_news_cases()` và `add_news_case()` sau bước kiểm tra dữ liệu, chuẩn hóa khóa và re-link tội danh. LLM được cung cấp danh sách crime từ luật và danh sách chất chuẩn; phải giữ thông tin không chắc chắn trong summary/role. Bài tuyên truyền không chứa vụ cụ thể trả danh sách cases rỗng. Prompt cấm trộn đoạn tin liên quan vào vụ chính, nhưng kết quả thật vẫn có Case riêng từ footer; E3 trong báo cáo phân tích giới hạn này, không nhận guardrail là bảo đảm tuyệt đối.
+
+Tên tội không link được giữ trên `Case.unlinked_charges` hoặc `INVOLVED_IN.unlinked_charge`, kèm nguồn trong context, thay vì bỏ âm thầm hoặc tạo cạnh luật giả. Diagnostic không phải xác nhận pháp lý. Chuỗi cá nhân ghép nhiều tội vẫn có thể không link được dù từng tội riêng thuộc KB; đây là E6 đã quan sát ở Lê Văn Đông.
 
 ## 3. Relationships
 
@@ -99,7 +101,7 @@ Tin dùng `extract_news_cases()` và `add_news_case()` sau bước kiểm tra d�
 | `CHARGED_WITH` | `Case → Crime` | Không | Tội danh được nguồn nêu cho vụ, chuẩn hóa để nối tới luật. Tên quan hệ là shorthand của HINT, không mặc nhiên khẳng định đã kết án. |
 | `INVOLVES` | `Case → Substance` | `amount` là chuỗi gốc gồm lượng, đơn vị và qualifier nếu có | Chất có trong vụ; không đổi “hơn”, “gần”, “nghi là” thành số chính xác hoặc chất đã được xác nhận. |
 | `LOCATED_IN` | `Case → Location` | Không | Địa bàn chính của vụ theo nguồn; bản HINT không mô hình hóa đầy đủ tuyến vận chuyển nhiều địa điểm. |
-| `INVOLVED_IN` | `Person → Case` | `role`, `sentence`, `charge` | Vai trò, mức án thực tế và tội danh của từng người trong vụ. Chưa có án thì sentence rỗng, không lấy khung luật điền vào. |
+| `INVOLVED_IN` | `Person → Case` | `role`, `sentence`, `charge`, `unlinked_charge` | Vai trò, mức án thực tế và tội danh từng người; giữ tên tội chưa link để chẩn đoán. Chưa có án thì sentence rỗng, không lấy khung luật điền vào. |
 
 Mức án nằm trên cạnh Person–Case vì một người có thể liên quan nhiều vụ và mỗi người trong cùng vụ có mức án khác nhau. Khi truy tội của một người, ưu tiên `INVOLVED_IN.charge`; không lấy mọi `Case-CHARGED_WITH->Crime` rồi gán toàn bộ cho người đó. Người bị hủy khởi tố hoặc chỉ là người liên quan không được mang charge/sentence của người khác.
 
@@ -109,11 +111,11 @@ Mức án nằm trên cạnh Person–Case vì một người có thể liên qu
 - **Vì sao chọn:** Tin nêu hành vi/tội bị điều tra hoặc xét xử, luật định nghĩa tội và khung hình phạt. Chuỗi `Case -> Crime <- Article` bổ sung căn cứ không có trong chunk tin tức. Nối chỉ bằng Substance dễ nhầm Điều 249/250/251 vì cùng chất có thể xuất hiện trong nhiều tội.
 - **Cách đảm bảo khớp:** `normalize_crime()` chuẩn hóa chữ hoa, whitespace, dấu nháy và tiền tố `tội `. LLM được yêu cầu chọn tên từ danh sách canonical. `link_entity()` normalize hai phía, exact trước rồi fuzzy cutoff 0.8; trả cách viết gốc của canonical, không sinh tên gần đúng mới.
 - **Khi cầu gãy:** Extract thiếu charge, viết tắt quá khác canonical, nhầm tội sử dụng/tổ chức sử dụng, hoặc nêu tội ngoài KB. Không tạo cạnh pháp lý nếu không link được; lưu mô tả vụ, ghi nhận charge chưa link và nêu thiếu căn cứ khi trả lời. Fuzzy matching là gợi ý chuẩn hóa, không phải chứng minh pháp lý; trường hợp mơ hồ cần kiểm tra nguồn.
-- **Cách kiểm chứng sau triển khai:** Fixture trên Neo4j đã xác nhận Person/Case → Crime ← Article → Clause, tách đúng charge cá nhân và đọc được khoản 1/khung tối đa. Đây chưa thay thế build LLM hoặc thao tác Browser với dữ liệu thật. `--check` vẫn cần thấy context Điều 251 từ bài Lê Minh Thành sau khi cấu hình API hợp lệ.
+- **Cách kiểm chứng sau triển khai:** Live `--check` đã trả context 23 facts có Điều 251 từ bài Lê Minh Thành và một đường nối hai KB dài hai cạnh. Full judge sau đó dựng graph đầy đủ; Q3–Q5 Graph đều recall 1,00 / judge 2. Ảnh cross-KB và vụ Cái Quang Huy xác nhận Person/Case → Crime ← Article trên Browser. Kiểm tra bridge pass không bảo đảm mọi người/tội đều link; E6 là phản ví dụ đã lưu trong báo cáo.
 
 ## 5. Competency questions
 
-Các pattern sau là kế hoạch retrieval cho câu hỏi trong dataset, không phải kết quả Cypher đã chạy và không phải danh sách giá trị hardcode trong agent. Giá trị `$...` lấy từ câu hỏi/tài liệu retrieval. “Trả lời được” đánh giá khả năng biểu diễn của thiết kế; chất lượng thực tế còn phải đo bằng benchmark.
+Các pattern sau mô tả đường retrieval cho câu hỏi trong dataset, không phải danh sách giá trị hardcode trong agent. Giá trị `$...` lấy từ câu hỏi/tài liệu retrieval. “Trả lời được” đánh giá khả năng biểu diễn; điểm thật của từng Q ở `REPORT_KG.md`: Graph recall 1,00 cho cả sáu câu, judge 2 ở Q1–Q5 và 1 ở Q6. Khả năng biểu diễn không bảo đảm extraction/answer hoàn hảo.
 
 | Câu | Đường đi (Cypher pattern) | Trả lời được? |
 | --- | --- | --- |
@@ -139,8 +141,8 @@ Khi dựng context, ưu tiên dữ kiện trả lời câu hỏi, tội của ng
 1. **Crime là cầu nối chính.** Phương án khác là nối qua Substance hoặc chỉ qua số điều trích từ tin. Chọn Crime vì tên tội xuất hiện ở cả hai KB và xác định được Article; một chất xuất hiện ở nhiều tội, còn tin có thể không nêu số điều. Đánh đổi: entity linking sai có thể kéo về căn cứ pháp lý sai, nên phải kiểm tra source và canonical mapping.
 2. **Dùng bảy label HINT, không bổ sung node ngưỡng/sự kiện ngay.** Phương án khác là thêm Quantity, Threshold, LegalPoint, ProceduralEvent. Chọn scaffold để hoàn thành phép so sánh Flat/Graph với ít công triển khai hơn. Đánh đổi: Q5 và diễn biến tố tụng cần đọc text/LLM, chưa có suy luận ngưỡng số hoặc thời gian chắc chắn; đây là hướng bonus chưa thực hiện.
 3. **Tách tới Clause, giữ điểm trong text.** Phương án khác là Article-only hoặc tách từng điểm thành node. Clause đủ cho khung cơ bản Q3 và ngữ cảnh khung tối đa Q4, ít node hơn mô hình từng điểm. Đánh đổi: điều kiện điểm b trong Q5 chưa truy vấn số học độc lập được, và prompt phải mang thêm text.
-4. **Mức án/charge thuộc cạnh Person–Case; khung phạt thuộc Clause.** Phương án khác là sentence trên Person hoặc Case, hoặc node Sentence riêng. Chọn cạnh để không gán án của một người cho người khác và không đồng nhất án thực tế với mức có thể áp dụng. Đánh đổi: một cạnh chưa biểu diễn nhiều bản án/giai đoạn theo thời gian; helper có thể ghi đè nếu build nhiều bản cập nhật.
-5. **Scope khóa Case theo tài liệu, vẫn dùng Person.name.** Phương án khác là giữ Case.name tự do, hoặc tạo ID vụ/người toàn cục từ nhiều thuộc tính. Scope nguồn bảo vệ `doc_id` và giúp truy lại bài gốc, trong khi tên người chuẩn/aliases giữ tương thích HINT. Đánh đổi: một vụ ở nhiều bài vẫn có nhiều Case, homonym và paraphrase chưa được giải quyết triệt để; constraint không thay entity resolution.
+4. **Mức án/charge thuộc cạnh Person–Case; khung phạt thuộc Clause.** Phương án khác là sentence trên Person hoặc Case, hoặc node Sentence riêng. Chọn cạnh để không gán án của một người cho người khác và không đồng nhất án thực tế với mức có thể áp dụng. Đánh đổi: một cạnh chưa biểu diễn nhiều bản án/giai đoạn theo thời gian; helper có thể ghi đè nếu build nhiều bản cập nhật. E6 thực tế còn cho thấy một chuỗi charge không đủ khi cá nhân có nhiều tội; đề xuất danh sách riêng, chưa triển khai.
+5. **Scope khóa Case theo tài liệu, vẫn dùng Person.name.** Phương án khác là giữ Case.name tự do, hoặc tạo ID vụ/người toàn cục từ nhiều thuộc tính. Scope nguồn bảo vệ `doc_id` và giúp truy lại bài gốc, trong khi tên người chuẩn/aliases giữ tương thích HINT. Đánh đổi: một vụ ở nhiều bài vẫn có nhiều Case, homonym và paraphrase chưa được giải quyết triệt để; constraint không thay entity resolution. E3 đã xác nhận cùng vụ Cái Quang Huy thành hai Case do footer nhắc lại bài gốc.
 6. **Regex cho luật, LLM cho tin, giữ lượng dạng text.** Phương án khác là gọi LLM cho cả hai hoặc parse báo bằng regex. Luật cấu trúc đều nên regex rẻ và tái lập; văn xuôi báo cần LLM để phân vai và mức án. Đánh đổi: tin extraction có chi phí/dao động, JSON cần validation; lượng mơ hồ và nhiều chất không được suy diễn thành số chính xác.
 
 ## 7. So với ontology gợi ý (bắt buộc nếu xét bonus)
@@ -149,9 +151,10 @@ Chưa chọn bonus ontology riêng. Giữ nguyên bảy label và bảy relation
 
 | Điểm khác | Gợi ý làm gì | Bạn làm gì | Vấn đề nó giải quyết | Bằng chứng (Cypher, hoặc số liệu benchmark) |
 | --- | --- | --- | --- | --- |
-| Scope Case theo nguồn | Helper MERGE theo tên vụ do LLM tạo | Chuẩn bị `Case.name` gồm doc_id và caption trước khi ghi | Tránh gộp Case cùng tên từ hai nguồn rồi ghi đè provenance | Test offline xác nhận hai doc ID tạo hai khóa khác nhau; chưa xác nhận extraction live |
+| Scope Case theo nguồn | Helper MERGE theo tên vụ do LLM tạo | Chuẩn bị `Case.name` gồm doc_id và caption trước khi ghi | Tránh gộp Case cùng tên từ hai nguồn rồi ghi đè provenance | Test offline và graph thật xác nhận các khóa có doc_id nguồn; E3 cho thấy vẫn trùng sự kiện thực tế |
 | Quy ước tên chất | Có danh sách chuẩn trong prompt, chưa đủ alias resolution | Canonical mapping cho tên khớp, không suy “kẹo” là MDMA nếu thiếu căn cứ | Giảm biến thể hoa/thường mà không tạo xác nhận chất giả | Test offline xác nhận mdma → MDMA và giữ chất chưa có trong danh sách; chưa có đo benchmark trước/sau |
-| Quy tắc retrieval theo loại câu | HINT nhấn mạnh khoản 1 và khoản có Substance | Q4 xét thêm khoản hình phạt không nhắc chất; Q6 mở theo Substance toàn graph, bỏ seed không liên quan | Tránh bỏ khung tối đa hoặc bỏ các vụ ngoài vector top-k | Test mock và fixture Neo4j đã xác nhận hai đường truy vấn; chưa có so sánh chất lượng/cost benchmark thật |
+| Quy tắc retrieval theo loại câu | HINT nhấn mạnh khoản 1 và khoản có Substance | Q4 xét thêm khoản hình phạt không nhắc chất; Q6 mở theo Substance toàn graph, bỏ seed không liên quan | Tránh bỏ khung tối đa hoặc bỏ các vụ ngoài vector top-k | Q4 Graph recall 1,00 / judge 2; Q6 recall 1,00 / judge 1, không phải so sánh HINT/custom trước–sau |
+| Giữ diagnostic chưa link | Tội không khớp có thể bị bỏ sau linking | Lưu unlinked_charges/unlinked_charge, không tạo cạnh pháp lý giả | Truy nguồn và nhận diện tội ngoài KB hoặc chuỗi nhiều tội | 3 test bổ sung và E6 thật của Lê Văn Đông xác nhận diagnostic còn nguyên dù charge canonical rỗng |
 
 Muốn xét +15 sau này phải có thay đổi cấu trúc có chủ đích, competency question được hỗ trợ tốt hơn và kết quả HINT thật trong `ket_qua_benchmark_kg.hint.txt` cùng bằng chứng Cypher/benchmark trước–sau. Chỉ thêm quy ước tên không đáp ứng điều kiện bonus.
 
@@ -161,7 +164,8 @@ Muốn xét +15 sau này phải có thay đổi cấu trúc có chủ đích, co
 - **Lượng và ngưỡng chưa có cấu trúc:** `INVOLVES.amount`/`Clause.text` không đủ cho join khoảng số, quy đổi mọi đơn vị, tỷ lệ hỗn hợp hay lượng gắn với từng bị cáo. Q5 phụ thuộc đọc summary/text; không được mô tả là suy luận ngưỡng tất định.
 - **Giai đoạn tố tụng chưa thành entity:** Role/summary/sentence phản ánh nguồn tại thời điểm bài viết, chưa có timeline bắt–khởi tố–truy tố–sơ thẩm–phúc thẩm. Cần tránh khẳng định người bị bắt đã nhận khung án tối đa và tránh ghi đè bản án cũ mà mất nguồn.
 - **Chất và địa điểm chưa có alias ontology đầy đủ:** HINT có danh sách chất hữu hạn; biệt ngữ, chất mới hoặc địa giới thay đổi có thể không link. Không thể mặc định mọi “nước vui” là MDMA hoặc mọi địa điểm nhắc trong bài là nơi phạm tội.
-- **Nhiễm từ tin liên quan:** Cuối bài Lê Minh Thành có đoạn về Cái Quang Huy; cuối bài hơn 36 kg có đoạn tuyên truyền. Extraction phải phân biệt với nội dung vụ chính, không sửa/xóa input để che rủi ro.
+- **Nhiễm từ tin liên quan (E3 đã quan sát):** Footer bài Lê Minh Thành nhắc lại vụ Cái Quang Huy và bị trích thành Case riêng; graph có hai Case cùng sự kiện. Prompt không đủ thay bước tách cấu trúc bài và entity resolution. Không sửa/xóa input để che lỗi.
+- **Chuỗi đa tội cá nhân (E6 đã quan sát):** Lê Văn Đông có hai tội bị ghép thành một charge, không canonical-link được; context cá nhân thiếu Điều 249/255 dù Case có hai cầu nối. Diagnostic giữ bằng chứng nhưng không tự sửa căn cứ; đề xuất charge list và membership query.
 - **Phạm vi luật và thẩm quyền:** Dùng đúng snapshot BLHS/PCMT trong dataset; không coi là dữ liệu pháp luật hiện hành toàn diện. Với tin ở nước ngoài, không suy rằng BLHS Việt Nam đương nhiên áp dụng chỉ vì tội có tên tương tự.
 - **Aggregation ở cấp nguồn:** Nhiều Case thuộc các bài khác nhau có thể nói cùng vụ. Q6 cần nêu nguồn và tránh biến số node Case thành số vụ thực tế đã xác minh; giới hạn context cũng có thể làm thiếu kết quả nếu ưu tiên sai.
 - **Extraction và trả lời có thể sai:** Constraint ngăn duplicate key, không xác nhận nội dung đúng. Fuzzy linking có thể nhầm tội; JSON có thể thiếu property; LLM trả lời có thể trái facts. Cần test, `--check`, Cypher và báo cáo lỗi thật trước khi nhận hệ thống đạt chất lượng.
@@ -173,11 +177,37 @@ Muốn xét +15 sau này phải có thay đổi cấu trúc có chủ đích, co
 - [x] Chốt labels, relationships, cầu nối, khóa MERGE, provenance và cách extraction.
 - [x] Có đường đi và giới hạn cho đủ Q1–Q6.
 - [x] Điền đủ tám mục template, nêu các quyết định và trade-off.
-- [x] Triển khai KG-1/KG-2; 5 test LinkEntity gốc, 20 test bổ sung và 41 test base pass.
+- [x] Triển khai KG-1/KG-2; 5 test LinkEntity gốc và 41 test base pass.
 - [x] Neo4j `EXPLAIN` chấp nhận 7 constraint và hai query ghi luật/tin; không tạo node để giả kết quả build.
 - [x] Triển khai KG-3/KG-4, ghép dữ kiện graph với vector chunks theo doc ID gốc.
-- [x] Bộ test gốc: 48 passed; toàn bộ bộ test gồm phần bổ sung: 83 passed, 10 subtests passed.
+- [x] Bộ test gốc: 48 passed; toàn bộ bộ test gồm phần bổ sung: 86 passed, 10 subtests passed.
 - [x] Fixture Neo4j xác nhận multi-hop, tội từng người, alias/khung tối đa, định nghĩa PCMT, aggregation MDMA, giới hạn context và prompt KG-4; rollback toàn bộ dữ liệu test.
-- [ ] Build graph và xác minh thiết kế bằng Cypher/`--check`/benchmark thật.
+- [x] Live `--check` đủ 7 `[OK]`, full `--judge` thành công và ba ảnh graph thật.
 
-Lệnh `python bench_kg.py --build --limit 2` dừng ở `[LỖI SETUP-1]` do thiếu API key, trước khi reset/nạp graph. Lần chạy `--check` cũng dừng tại đó, sau đúng ba `[OK]`: dữ liệu 18 luật/20 tin, KG-1 và kết nối Neo4j. Chưa đạt đủ bảy `[OK]`. Số node lưu bền vững vẫn là 0. Test offline/fixture không thay thế extraction live và không được dùng làm output benchmark. Với YesScale cần key lưu đúng `.env`, Base URL tương thích OpenAI và model hợp lệ trước khi chạy API.
+### Snapshot graph thật sau full benchmark
+
+`--build --limit 2` đã nạp 148 node / 292 cạnh; `--check` sau đó dùng 1 bài báo nên có 148 node / 293 cạnh. Đây là hai lần extraction khác nhau, không dùng làm snapshot nộp. Full `--judge` cuối cùng dùng toàn corpus, không còn fixture test, cho số dưới đây; không chạy check reset sau khi chụp ảnh.
+
+| Label | Node | Relationship | Cạnh |
+| --- | ---: | --- | ---: |
+| Clause | 99 | MENTIONS | 169 |
+| Person | 35 | HAS_CLAUSE | 99 |
+| Article | 18 | INVOLVED_IN | 44 |
+| Case | 15 | INVOLVES | 25 |
+| Substance | 15 | CHARGED_WITH | 18 |
+| Crime | 13 | LOCATED_IN | 14 |
+| Location | 7 | DEFINES | 13 |
+| **Tổng** | **202** | **Tổng** | **382** |
+
+Các cột node và relationship là hai phân bố độc lập, không phải cặp tương ứng. Đây đúng bảy label/bảy relationship trong sơ đồ; không có node Quantity/Threshold hay ProceduralEvent được nhận là đã triển khai. 15 Case là mô tả nguồn trích xuất, không phải 15 sự kiện thực tế duy nhất đã xác minh.
+
+Truy vấn provenance đã chạy trên graph thật:
+
+```cypher
+MATCH (node)
+WHERE (node:Article OR node:Clause OR node:Case)
+  AND (node.doc_id IS NULL OR node.doc_id = '')
+RETURN count(node) AS missing_provenance;
+```
+
+Kết quả `missing_provenance = 0`; entity dùng chung vẫn theo quy ước không ghi đè một nguồn đơn lẻ. Ảnh `kg_count.png` xác nhận phân bố node, `kg_cross_kb.png` xác nhận bridge và `kg_my_case.png` dùng Cái Quang Huy tới Điều 250 BLHS. Dữ liệu, truy vấn và giới hạn E3/E6 ở `REPORT_KG.md`/`GRAPH_DIAGNOSTICS.md`; không dùng ảnh mẫu hoặc chỉnh file benchmark.

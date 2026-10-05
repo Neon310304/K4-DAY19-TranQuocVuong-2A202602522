@@ -110,6 +110,19 @@ class TestGraphContext(unittest.TestCase):
         self.assertIn("khoản 1: phạt tù", text)
         self.assertIn("Biệt danh An", text)
 
+    def test_unlinked_charge_diagnostics_are_sourced_and_not_legal_facts(self):
+        self.case_clauses = []
+        unknown_charge = "lừa đảo chiếm đoạt tài sản"
+        self.cases[0]["unlinked_charges"] = [unknown_charge]
+        person = self.cases[0]["people"][0]
+        person["charge"] = ""
+        person["unlinked_charge"] = unknown_charge
+        text = "\n".join(self.graph.context("Nguyễn Văn An phạm tội gì?", ["news-test"]))
+        self.assertIn(unknown_charge, text)
+        self.assertIn("chưa nối được với KB luật", text)
+        self.assertIn("news-test", text)
+        self.assertNotIn("Điều 251", text)
+
 
 class TestGraphRAGRetrieval(unittest.TestCase):
     def test_deduplicates_original_doc_ids_and_keeps_all_chunks(self):

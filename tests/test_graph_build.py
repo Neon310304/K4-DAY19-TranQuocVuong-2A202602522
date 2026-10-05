@@ -164,6 +164,28 @@ class TestBuildGraph(unittest.TestCase):
         self.assertEqual(case["charges"], [self.crime])
         self.assertEqual(case["people"][0]["charge"], "")
 
+    def test_unlinked_charges_are_retained_without_inventing_legal_edges(self):
+        unknown_charge = "lừa đảo chiếm đoạt tài sản"
+        self.case["charges"] = [unknown_charge, "  " + unknown_charge + "  ", ""]
+        self.case["people"][0]["charge"] = unknown_charge
+        build_graph(self.graph, [self.law], [self.news], self.llm)
+        case, doc_id = self.graph.cases[0]
+        self.assertEqual(doc_id, self.news.id)
+        self.assertEqual(case["charges"], [])
+        self.assertEqual(case["unlinked_charges"], [unknown_charge])
+        self.assertEqual(case["people"][0]["charge"], "")
+        self.assertEqual(case["people"][0]["unlinked_charge"], unknown_charge)
+
+    def test_linked_and_absent_charges_do_not_create_false_diagnostics(self):
+        case = self.extract({"cases": [self.case]})[0]
+        self.assertEqual(case["unlinked_charges"], [])
+        self.assertEqual(case["people"][0]["unlinked_charge"], "")
+        self.case["charges"] = ["", "   "]
+        self.case["people"][0]["charge"] = ""
+        case = self.extract({"cases": [self.case]})[0]
+        self.assertEqual(case["unlinked_charges"], [])
+        self.assertEqual(case["people"][0]["unlinked_charge"], "")
+
     def test_names_aliases_and_amounts_are_normalized_without_inference(self):
         self.case["people"][0]["name"] = unicodedata.normalize("NFD", " Nguyễn Văn An ")
         self.case["substances"].append({"name": "Etomidate", "amount": "nghi là 3 gam"})
